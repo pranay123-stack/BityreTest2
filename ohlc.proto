@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package ohlc;
+
+message OHLC {
+    double open = 1;
+    double high = 2;
+    double low = 3;
+    double close = 4;
+    double volume = 5;
+    double value = 6;
+    string stock_code = 7;
+}
+
+message StockRequest {
+    string stock_code = 1;
+}
+
+message SendOHLCResponse {
+    // You might want to include an acknowledgment or status message here
+    // if needed for SendOHLC.
+    string message = 1;
+}
+
+service OHLCConsumerService {
+    rpc SendOHLC(OHLC) returns (SendOHLCResponse);
+    rpc GetOHLC(StockRequest) returns (OHLC);
+}

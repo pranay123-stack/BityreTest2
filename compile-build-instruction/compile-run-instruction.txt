@@ -1,0 +1,53 @@
+
+ohlc.proto 
+
+
+protoc -I=. --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` ohlc.proto                                                                       
+protoc -I=. --cpp_out=. ohlc.proto  
+
+
+
+
+=====================compile and run=============================================================
+
+
+//compile server
+g++ -std=c++17 -o server server.cpp ohlc.grpc.pb.cc ohlc.pb.cc -pthread \
+    `pkg-config --cflags protobuf grpc++ grpc` `pkg-config --libs protobuf grpc++ grpc` \
+    -lgrpc++_reflection -ljsoncpp -lhiredis
+
+
+
+
+
+//compile producer
+g++ -std=c++17 -o producer producer.cpp ohlc.grpc.pb.cc ohlc.pb.cc -pthread \
+    `pkg-config --cflags protobuf grpc++ grpc` `pkg-config --libs protobuf grpc++ grpc` \
+    -lgrpc++_reflection -ljsoncpp
+
+
+
+
+
+//compile client
+g++ -std=c++17 -o client client.cpp ohlc.grpc.pb.cc ohlc.pb.cc -pthread \
+    `pkg-config --cflags protobuf grpc++ grpc` `pkg-config --libs protobuf grpc++ grpc` \
+    -lgrpc++_reflection -ljsoncpp -lhiredis
+
+
+
+//RUN BELOW THESE IN THREE DIFFERENT TERMINALS
+
+
+//run server->STORING IN REDIS OHLC VALUES RECEIVED
+./server 50051
+
+
+
+//run producer-->SEND THE OHLC VALUES TO SERVER 
+./producer
+
+
+//run client to test any stock code data
+./client  UNVR  //IT WILL GIVE OHLC VALUES OF UNVR ,, YOU CAN CHANGE TO ANY OTHER STOCK CODE ALSO
+
