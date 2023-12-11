@@ -172,7 +172,7 @@ private:
 int main()
 {
     OHLCProducer producer;
-    producer.processFilesInFolder("/Users/pranaygaurav/Downloads/Bitwyre-Test2/solution/data");
+    producer.processFilesInFolder("/BityreTest2/data");
     producer.sendOHLCDataToConsumer();
 
     return 0;
