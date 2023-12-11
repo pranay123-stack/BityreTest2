@@ -172,7 +172,7 @@ private:
 int main()
 {
     OHLCProducer producer;
-    producer.processFilesInFolder("/BityreTest2/data");
+    producer.processFilesInFolder("./data");
     producer.sendOHLCDataToConsumer();
 
     return 0;

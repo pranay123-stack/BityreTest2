@@ -39,6 +39,10 @@ g++ -std=c++17 -o client client.cpp ohlc.grpc.pb.cc ohlc.pb.cc -pthread \
 //RUN BELOW THESE IN THREE DIFFERENT TERMINALS
 
 
+redis-server
+
+
+
 //run server->STORING IN REDIS OHLC VALUES RECEIVED
 ./server 50051
 
