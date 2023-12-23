@@ -1,107 +1,126 @@
-//========================================================================================================
 #include <grpc++/grpc++.h>
 #include "ohlc.grpc.pb.h"
 #include <hiredis/hiredis.h>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <memory>
 
-class OHLCConsumerServiceImpl final : public ohlc::OHLCConsumerService::Service
-{
+template <typename ExceptionType>
+class ExceptionHandler {
 public:
-    grpc::Status SendOHLC(grpc::ServerContext *context, const ohlc::OHLC *request, ohlc::SendOHLCResponse *response) override
-    {
-        // Save OHLC data to Redis
-        saveOHLCDataToRedis(request);
+    template <typename Func>
+    static void Handle(Func func, const std::string& errorMessage = "An error occurred.") {
+        try {
+            func();
+        } catch (const std::exception& e) {
+            std::cerr << "Exception: " << e.what() << std::endl;
+            throw ExceptionType(errorMessage);
+        } catch (...) {
+            std::cerr << "Unknown exception occurred." << std::endl;
+            throw ExceptionType(errorMessage);
+        }
+    }
+};
 
-        // You might want to include an acknowledgment or status message in the response
-        response->set_message("OHLC data received successfully");
+struct OHLCData {
+    double open;
+    double high;
+    double low;
+    double close;
+    int volume;
+    double value;
+    std::string stockCode;
+};
+
+class OHLCWithRedisException : public std::runtime_error {
+public:
+    OHLCWithRedisException(const std::string& message) : std::runtime_error(message) {}
+};
+
+class RedisConnection {
+public:
+    RedisConnection(const char* host, int port) : connection(redisConnect(host, port)) {
+        if (connection != nullptr && connection->err) {
+            throw OHLCWithRedisException("Failed to connect to Redis: " + std::string(connection->errstr));
+        }
+    }
+
+    ~RedisConnection() {
+        redisFree(connection);
+    }
+
+    redisContext* get() const {
+        return connection;
+    }
+
+private:
+    redisContext* connection;
+};
+
+class OHLCConsumerServiceImpl final : public ohlc::OHLCConsumerService::Service {
+public:
+    grpc::Status SendOHLC(grpc::ServerContext* context, const ohlc::OHLC* request, ohlc::SendOHLCResponse* response) override {
+        ExceptionHandler<OHLCWithRedisException>::Handle([&]() {
+            saveOHLCDataToRedis(request);
+            response->set_message("OHLC data received successfully");
+        }, "Error saving OHLC data to Redis.");
 
         return grpc::Status::OK;
     }
 
-    grpc::Status GetOHLC(grpc::ServerContext *context, const ohlc::StockRequest *request, ohlc::OHLC *response) override
-    {
-        // Retrieve OHLC data from Redis based on stock code
-        retrieveOHLCDataFromRedis(request->stock_code(), response);
+    grpc::Status GetOHLC(grpc::ServerContext* context, const ohlc::StockRequest* request, ohlc::OHLC* response) override {
+        ExceptionHandler<OHLCWithRedisException>::Handle([&]() {
+            retrieveOHLCDataFromRedis(request->stock_code(), response);
+        }, "Error retrieving OHLC data from Redis.");
 
         return grpc::Status::OK;
     }
 
 private:
-    // Redis connection
+    RedisConnection redisConnection{"localhost", 6379};
 
-    redisContext *redisConnection;
-    void saveOHLCDataToRedis(const ohlc::OHLC *ohlcData)
-    {
-        // Establish connection to Redis server
-        redisConnection = redisConnect("localhost", 6379);
-
-        if (redisConnection != nullptr && redisConnection->err)
-        {
-            std::cerr << "Failed to connect to Redis: " << redisConnection->errstr << std::endl;
-            return;
-        }
-
-        // Convert OHLC data to a formatted string
+    void saveOHLCDataToRedis(const ohlc::OHLC* ohlcData) {
         std::string formattedData = serializeOHLCData(ohlcData);
 
         // Save OHLC data to Redis using SET
-        redisReply *reply = static_cast<redisReply *>(redisCommand(redisConnection, "SET %s %s", ohlcData->stock_code().c_str(), formattedData.c_str()));
+        redisReply* reply = static_cast<redisReply*>(redisCommand(redisConnection.get(), "SET %s %s", ohlcData->stock_code().c_str(), formattedData.c_str()));
 
-        if (reply == nullptr || reply->type == REDIS_REPLY_ERROR)
-        {
-            std::cerr << "Failed to save OHLC data to Redis: " << (reply ? reply->str : "NULL") << std::endl;
-        }
-        else
-        {
+        if (reply == nullptr || reply->type == REDIS_REPLY_ERROR) {
+            throw OHLCWithRedisException("Failed to save OHLC data to Redis: " + (reply ? std::string(reply->str) : "NULL"));
+        } else {
             std::cout << "Saved OHLC data for stock: " << ohlcData->stock_code() << std::endl;
         }
 
         freeReplyObject(reply);
-        redisFree(redisConnection);
     }
 
-    void retrieveOHLCDataFromRedis(const std::string &stockCode, ohlc::OHLC *response)
-    {
-        // Establish connection to Redis server
-        redisConnection = redisConnect("localhost", 6379);
-
-        if (redisConnection != nullptr && redisConnection->err)
-        {
-            std::cerr << "Failed to connect to Redis: " << redisConnection->errstr << std::endl;
-            return;
-        }
-
+    void retrieveOHLCDataFromRedis(const std::string& stockCode, ohlc::OHLC* response) {
         // Retrieve OHLC data from Redis using GET
-        redisReply *reply = static_cast<redisReply *>(redisCommand(redisConnection, "GET %s", stockCode.c_str()));
+        redisReply* reply = static_cast<redisReply*>(redisCommand(redisConnection.get(), "GET %s", stockCode.c_str()));
 
-        if (reply != nullptr && reply->type == REDIS_REPLY_STRING)
-        {
+        if (reply != nullptr && reply->type == REDIS_REPLY_STRING) {
             deserializeOHLCData(reply->str, response);
             std::cout << "Retrieved OHLC data for stock: " << stockCode << std::endl;
-        }
-        else
-        {
+        } else {
             std::cerr << "OHLC data not found for stock: " << stockCode << std::endl;
         }
 
         freeReplyObject(reply);
-        redisFree(redisConnection);
     }
 
-    std::string serializeOHLCData(const ohlc::OHLC *ohlcData)
-    {
-        // Serialize OHLC data to a formatted string
-        return ohlcData->stock_code() + "," + std::to_string(ohlcData->open()) + "," +
-               std::to_string(ohlcData->high()) + "," + std::to_string(ohlcData->low()) + "," +
-               std::to_string(ohlcData->close()) + "," + std::to_string(ohlcData->volume()) + "," + std::to_string(ohlcData->value());
+    std::string serializeOHLCData(const ohlc::OHLC* ohlcData) {
+        std::ostringstream oss;
+        oss << ohlcData->stock_code() << "," << ohlcData->open() << "," << ohlcData->high() << ","
+            << ohlcData->low() << "," << ohlcData->close() << "," << ohlcData->volume() << ","
+            << ohlcData->value();
+        return oss.str();
     }
 
-    void deserializeOHLCData(const std::string &serializedData, ohlc::OHLC *response)
-    {
-        // Deserialize OHLC data from a formatted string
+    void deserializeOHLCData(const std::string& serializedData, ohlc::OHLC* response) {
         std::istringstream iss(serializedData);
         std::string token;
 
-        // Split the string by commas and set the values in the response
         std::getline(iss, token, ',');
         response->set_stock_code(token);
 
@@ -125,8 +144,7 @@ private:
     }
 };
 
-void runServer()
-{
+void runServer() {
     std::string server_address("0.0.0.0:50051");
     OHLCConsumerServiceImpl service;
 
@@ -139,8 +157,10 @@ void runServer()
     server->Wait();
 }
 
-int main()
-{
-    runServer();
+int main() {
+    ExceptionHandler<OHLCWithRedisException>::Handle([&]() {
+        runServer();
+    }, "Error in the main application.");
+
     return 0;
 }

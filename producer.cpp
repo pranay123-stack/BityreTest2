@@ -1,4 +1,3 @@
-//====================================================================================================
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -6,174 +5,195 @@
 #include <map>
 #include <json/json.h>
 #include <cstdlib>
-#include <iomanip> // Add this include for formatting output
+#include <iomanip>
 #include <grpc++/grpc++.h>
 #include "ohlc.pb.h"
 #include "ohlc.grpc.pb.h"
 #include <filesystem>
+#include <limits>
+#include <stdexcept>
 
-struct MyOHLC
-{
+namespace fs = std::filesystem;
+
+template <typename ExceptionType>
+class ExceptionHandler {
+public:
+    template <typename Func>
+    static void Handle(Func func, const std::string& errorMessage = "An error occurred.") {
+        try {
+            func();
+        } catch (const std::exception& e) {
+            std::cerr << "Exception: " << e.what() << std::endl;
+            throw ExceptionType(errorMessage);
+        } catch (...) {
+            std::cerr << "Unknown exception occurred." << std::endl;
+            throw ExceptionType(errorMessage);
+        }
+    }
+};
+
+template <typename ExceptionType>
+struct MyOHLC {
     double open;
     double high;
     double low;
     double close;
     int volume;
     double value;
-    // ... (other members remain the same)
-    std::vector<double> historicalHighs{std::numeric_limits<double>::lowest()}; // Initialize with a very low value
-
-     double lowestPrice; // Add a member to store the lowest price
+    std::vector<double> historicalHighs{std::numeric_limits<double>::lowest()};
+    double lowestPrice;
 };
-class OHLCProducer
-{
+
+class CustomException : public std::exception {
 public:
-    void processFilesInFolder(const std::string &folderPath)
-    {
-        // Iterate through all files in the specified folder
-        for (const auto &entry : std::filesystem::directory_iterator(folderPath))
-        {
-            if (entry.is_regular_file() && entry.path().extension() == ".ndjson")
-            {
+    explicit CustomException(const std::string& message) : message(message) {}
+
+    const char* what() const noexcept override {
+        return message.c_str();
+    }
+
+private:
+    std::string message;
+};
+
+using MyOHLCWithException = MyOHLC<CustomException>;
+
+class OHLCProducer {
+public:
+    void processFilesInFolder(const std::string& folderPath) {
+        ExceptionHandler<CustomException>::Handle([&]() {
+            for (const auto& entry : fs::directory_iterator(folderPath)) {
                 processFile(entry.path().string());
             }
-        }
+        }, "Error processing folder.");
     }
 
-    void processFile(const std::string &filePath)
-    {
-        std::ifstream file(filePath);
-        std::string line;
+private:
+    void processFile(const std::string& filePath) {
+        ExceptionHandler<CustomException>::Handle([&]() {
+            std::ifstream file(filePath);
+            if (!file.is_open()) {
+                throw std::runtime_error("Failed to open file: " + filePath);
+            }
 
-        while (std::getline(file, line))
-        {
-            // Same processing logic as before
-            // Parse the JSON data
+            std::string line;
+            while (std::getline(file, line)) {
+                processJSONData(line);
+            }
+        }, "Error processing file: " + filePath);
+    }
+
+    void processJSONData(const std::string& jsonDataStr) {
+        ExceptionHandler<CustomException>::Handle([&]() {
             Json::CharReaderBuilder reader;
             Json::Value jsonData;
-            std::istringstream iss(line);
+            std::istringstream iss(jsonDataStr);
 
-            try
-            {
-                Json::parseFromStream(reader, iss, &jsonData, nullptr);
-                char type = jsonData["type"].asString()[0];
-                int quantity = 0;   // Initialize quantity
-                double price = 0.0; // Initialize price
+            parseJSON(reader, iss, jsonData);
 
-                // Extract quantity and price based on the "type" field
-                if (type == 'A') // Order type
-                {
-                    quantity = std::stoi(jsonData["quantity"].asString());
-                    price = std::stod(jsonData["price"].asString());
-                }
-                else if (type == 'E') // Executed order type
-                {
-                    quantity = std::stoi(jsonData["executed_quantity"].asString());
-                    price = std::stod(jsonData["execution_price"].asString());
-                }
+            char type = jsonData["type"].asString()[0];
+            int quantity = 0;
+            double price = 0.0;
 
-                std::string stockCode = jsonData["stock_code"].asString();
-
-                // Check if the stock code exists in the map
-                auto it = ohlcMap.find(stockCode);
-
-                if (it == ohlcMap.end())
-                {
-                    // If the stock code does not exist, create a new OHLC instance
-                    MyOHLC ohlc;
-                    ohlc.open = price; // Initial open value is the current execution price
-                    ohlc.high = price;
-                    ohlc.low = price;
-                    ohlc.close = price;
-                    ohlc.volume = quantity;
-                    ohlc.value = quantity * price;
-                    ohlc.historicalHighs.push_back(price);
-                    ohlc.lowestPrice = price; // Initialize lowestPrice with the first observed price
-
-                    ohlcMap[stockCode] = ohlc;
-                }
-                else
-                {
-                    // If the stock code exists, update the existing entry
-                    MyOHLC &ohlc = ohlcMap[stockCode];
-
-                    // Set the open value to the previous execution price for the next data point
-                    ohlc.open = ohlc.close;
-
-                    // Update historical highs and lows
-                    ohlc.historicalHighs.push_back(price);
-              
-                    ohlc.high = *std::max_element(ohlc.historicalHighs.begin(), ohlc.historicalHighs.end());
-                   
-                     // Update lowestPrice if a new lowest price is encountered
-                    if (price < ohlc.lowestPrice)
-                    {
-                        ohlc.low = price;
-                    }
-                    else
-                    {
-                         ohlc.low = ohlc.lowestPrice;
-                    }
-
-
-                    // Update close to the current execution price
-                    ohlc.close = price;
-
-                    // Update volume and value
-                    ohlc.volume += quantity;
-                    ohlc.value += quantity * price;
-                }
+            if (type == 'A') {
+                quantity = std::stoi(jsonData["quantity"].asString());
+                price = std::stod(jsonData["price"].asString());
+            } else if (type == 'E') {
+                quantity = std::stoi(jsonData["executed_quantity"].asString());
+                price = std::stod(jsonData["execution_price"].asString());
             }
-            catch (const Json::Exception &e)
-            {
-                std::cerr << "Error parsing JSON: " << e.what() << std::endl;
-                continue; // Skip to the next iteration
+
+            std::string stockCode = jsonData["stock_code"].asString();
+
+            if (auto it = ohlcMap.find(stockCode); it == ohlcMap.end()) {
+                ohlcMap[stockCode] = createOHLC(price, quantity);
+            } else {
+                updateOHLC(it->second, price, quantity);
             }
-        }
+        }, "Error processing JSON data.");
     }
 
-    void sendOHLCDataToConsumer()
-    {
-        // Create a gRPC channel to communicate with OHLCConsumerService
-        std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials());
-        std::unique_ptr<ohlc::OHLCConsumerService::Stub> stub = ohlc::OHLCConsumerService::NewStub(channel);
+    void parseJSON(Json::CharReaderBuilder& reader, std::istringstream& iss, Json::Value& jsonData) {
+        Json::parseFromStream(reader, iss, &jsonData, nullptr);
+    }
 
-        // Iterate through OHLC data and send Protobuf messages
-        for (const auto &entry : ohlcMap)
-        {
-            ohlc::OHLC request;
-            request.set_stock_code(entry.first);
-            request.set_open(entry.second.open);
-            request.set_high(entry.second.high);
-            request.set_low(entry.second.low);
-            request.set_close(entry.second.close);
-            request.set_volume(entry.second.volume);
-            request.set_value(entry.second.value);
+    MyOHLCWithException createOHLC(double price, int quantity) {
+        return {
+            .open = price,
+            .high = price,
+            .low = price,
+            .close = price,
+            .volume = quantity,
+            .value = quantity * price,
+            .historicalHighs = {price},
+            .lowestPrice = price
+        };
+    }
 
-            grpc::ClientContext context;
-            ohlc::SendOHLCResponse response;
-            grpc::Status status = stub->SendOHLC(&context, request, &response);
+    void updateOHLC(MyOHLCWithException& ohlc, double price, int quantity) {
+        ohlc.open = ohlc.close;
+        ohlc.historicalHighs.push_back(price);
+        ohlc.high = *std::max_element(ohlc.historicalHighs.begin(), ohlc.historicalHighs.end());
 
-            if (status.ok())
-            {
-                std::cout << "OHLC data sent successfully for stock: " << entry.first << std::endl;
+        if (price < ohlc.lowestPrice) {
+            ohlc.low = ohlc.lowestPrice = price;
+        } else {
+            ohlc.low = ohlc.lowestPrice;
+        }
+
+        ohlc.close = price;
+        ohlc.volume += quantity;
+        ohlc.value += quantity * price;
+    }
+
+public:
+    void sendOHLCDataToConsumer() {
+        ExceptionHandler<CustomException>::Handle([&]() {
+            std::shared_ptr<grpc::Channel> channel = grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials());
+            std::unique_ptr<ohlc::OHLCConsumerService::Stub> stub = ohlc::OHLCConsumerService::NewStub(channel);
+
+            for (const auto& [stockCode, ohlc] : ohlcMap) {
+                ohlc::OHLC request;
+                fillOHLCProtobuf(ohlc, stockCode, request);
+
+                grpc::ClientContext context;
+                ohlc::SendOHLCResponse response;
+                grpc::Status status = stub->SendOHLC(&context, request, &response);
+
+                handleGRPCStatus(status, stockCode);
             }
-            else
-            {
-                std::cerr << "Failed to send OHLC data for stock: " << entry.first << ". Error: " << status.error_message() << std::endl;
-            }
+        }, "Error sending OHLC data to consumer.");
+    }
+
+private:
+    void fillOHLCProtobuf(const MyOHLCWithException& ohlc, const std::string& stockCode, ohlc::OHLC& request) {
+        request.set_stock_code(stockCode);
+        request.set_open(ohlc.open);
+        request.set_high(ohlc.high);
+        request.set_low(ohlc.low);
+        request.set_close(ohlc.close);
+        request.set_volume(ohlc.volume);
+        request.set_value(ohlc.value);
+    }
+
+    void handleGRPCStatus(const grpc::Status& status, const std::string& stockCode) {
+        if (status.ok()) {
+            std::cout << "OHLC data sent successfully for stock: " << stockCode << std::endl;
+        } else {
+            std::cerr << "Failed to send OHLC data for stock: " << stockCode << ". Error: " << status.error_message() << std::endl;
         }
     }
 
 private:
-    std::map<std::string, MyOHLC> ohlcMap;
+    std::map<std::string, MyOHLCWithException> ohlcMap;
 };
 
-int main()
-{
-    OHLCProducer producer;
-    producer.processFilesInFolder("./data");
-    producer.sendOHLCDataToConsumer();
+int main() {
+    ExceptionHandler<CustomException>::Handle([&]() {
+        OHLCProducer producer;
+        producer.processFilesInFolder("./data");
+        producer.sendOHLCDataToConsumer();
+    }, "An error occurred in the main application.");
 
     return 0;
 }
